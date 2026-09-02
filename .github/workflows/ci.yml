@@ -8,10 +8,34 @@
 # exactly like this second job — download the slices, package, rehearse.
 name: ci
 
+# Only when something this workflow actually tests can have changed: the build script and the
+# shim, the packaging, the pin. A push that touches the README, RELEASING, the release notes in
+# publish.yml or the tagger compiles no FFmpeg — those are exercised by the release itself, or
+# by nothing, and a five-minute native build is a poor way to review prose.
 on:
   push:
     branches: [main]
+    paths:
+      - "scripts/**"
+      - "src/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle/**"
+      - "gradle.properties"
+      - "versions.properties"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/natives.yml"
   pull_request:
+    paths:
+      - "scripts/**"
+      - "src/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle/**"
+      - "gradle.properties"
+      - "versions.properties"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/natives.yml"
 
 permissions:
   contents: read
