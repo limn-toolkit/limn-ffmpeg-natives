@@ -1,0 +1,8 @@
+[versions]
+central-publish = "0.37.0"
+
+[plugins]
+# Maven Central's own upload API takes a signed bundle, which `maven-publish` alone cannot
+# produce: this plugin turns the publication into that bundle, signs every artifact in it, and
+# hands it to the Central Portal. Same plugin, same version, as limn-toolkit and limn-fonts.
+central-publish = { id = "com.vanniktech.maven.publish", version.ref = "central-publish" }

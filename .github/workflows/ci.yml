@@ -1,0 +1,94 @@
+# The gate for a push and a PR. Six FFmpeg builds per push would be minutes of five machines for
+# every typo, so CI builds ONE slice — linux-x86_64, with the exact recipe the release uses for it
+# (same manylinux container, same toolchain lines, same `bash scripts/...` invocation that the
+# original native builds learned the hard way) — and then does everything the release does short
+# of uploading, on an ordinary runner: packages it, checks the metadata, and rehearses a target-17
+# consumer against it. Two jobs rather than one on purpose: Gradle and a JDK 21 are proven on
+# ubuntu-latest and never were inside that container, and the release's publish job is shaped
+# exactly like this second job — download the slices, package, rehearse.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  slice:
+    name: build linux-x86_64
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 60
+    # Spelled out rather than left to the runner's probe: inside a container it picks `sh` when
+    # it does not find bash, and these steps are written in bash.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Where are we
+        run: |
+          echo "pwd: $(pwd)"
+          echo "shell: $(command -v bash || echo 'no bash')"
+          ls -l scripts/build-ffmpeg.sh
+
+      # The same lines as natives.yml's Linux job: a JDK for jni.h (the shim), nasm for the x86
+      # assembly a published build has. A manylinux container ships neither.
+      - name: Install the toolchain (manylinux)
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            diffutils file which xz java-17-openjdk-devel
+          echo "javac: $(command -v javac)"
+          dnf install -y nasm || echo "nasm unavailable: the build falls back to --disable-x86asm"
+
+      # `bash scripts/...` and not `./scripts/...`: invoking the file directly asks the kernel to
+      # honour its execute bit and resolve its shebang, and inside a container that is two ways to
+      # fail with exit 127 and not one word of output.
+      - name: Build the player payload
+        run: bash scripts/build-ffmpeg.sh --profile player
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-native-linux-x86_64
+          path: native/dist/player/
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: package and rehearse a consumer
+    needs: slice
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The slice, merged into the tree the build packages from — the same step, the same path
+      # and the same action the publish job uses for all six.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ffmpeg-native-*
+          merge-multiple: true
+          path: native/dist/player
+
+      - name: Show what was produced
+        run: ls -lR native/dist/player
+
+      - name: Assemble
+        run: ./gradlew assemble -PlimnFfmpegProfile=player
+
+      # Publishes to a file repository, resolves from it as a target-17 consumer, and checks the
+      # metadata and every jar's contents — the half of a rehearsal limn-fonts' first release
+      # skipped.
+      - name: Rehearse the consumer
+        run: bash scripts/rehearse-consumer.sh

@@ -1,0 +1,53 @@
+# Turns versions.properties into the release tag, on every push to main, so nobody types or
+# pushes one: landing a bumped entry on main IS the release decision.
+#
+# If `v<version>` is not on origin, this creates it at the pushed commit and starts the publish
+# run explicitly — a ref pushed with the workflow's own GITHUB_TOKEN triggers no other workflow
+# (GitHub's recursion guard), and workflow_dispatch is the documented exception. What stays human:
+# Publish on the Central Portal, and the drafted GitHub release.
+
+name: tag-releases
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag-releases
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Tag what versions.properties asks for, and start the publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          VERSION="$(sed -n 's/^limn-ffmpeg-natives[[:space:]]*=[[:space:]]*//p' versions.properties | tr -d '[:space:]')"
+          TAG="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "· $TAG already on origin (bump versions.properties for a new release)"
+            exit 0
+          fi
+          git tag -a "$TAG" -m "limn-ffmpeg-natives $VERSION"
+          git push origin "refs/tags/$TAG"
+          gh workflow run publish.yml --ref "$TAG" -f version="$VERSION"
+          echo "✚ $TAG created at $GITHUB_SHA; publish dispatched"
+          {
+            echo "### Tagged and dispatched $TAG"
+            echo ""
+            echo "The publish builds six slices, rehearses a consumer, stages a deployment on <https://central.sonatype.com/publishing/deployments> and drafts a GitHub release; both wait for a human."
+          } >> "$GITHUB_STEP_SUMMARY"

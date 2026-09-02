@@ -1,0 +1,173 @@
+# Builds this repository's payload — the FFmpeg libraries and the JNI shim for all six desktop
+# slices — and hands them back as artifacts. Nothing here is committed, and that is the point:
+# the binaries exist for the length of a run, travel into the jars the release publishes, and
+# are never in the source tree.
+#
+# `scripts/build-ffmpeg.sh` does the work; this file only supplies each slice the machine and the
+# toolchain it cannot cross-compile from anywhere else. What the script demands, and why the
+# obvious runner is wrong in two cases:
+#
+#   macOS      one job, two slices. `--arch arm64,x86_64` builds both from an Apple Silicon
+#              runner, so this is the only host that covers a platform in one pass.
+#   Linux      a container, NOT the runner's own userland. The script enforces a glibc floor of
+#              2.28 (RHEL 8, Debian 10, Ubuntu 20.04 — see LINUX_GLIBC_FLOOR) and REFUSES a
+#              payload that needs newer, which is what ubuntu-latest at glibc 2.39 would produce.
+#              manylinux_2_28 exists for exactly this, and each architecture builds on its own
+#              native runner because the script does not cross-compile between them.
+#   Windows    MSYS2, because FFmpeg's configure is a shell script that runs hundreds of compile
+#              probes and there is no MSVC project to open. CLANG64 for x86_64 and CLANGARM64 for
+#              arm64: under MINGW64 the DLLs import a runtime that is not in the directory, and
+#              the script's own dependency check fails the build rather than shipping a library
+#              that loads only on the machine that built it.
+#
+# Reusable (`workflow_call`) so the release calls it and its artifacts land in the same run, and
+# dispatchable on its own, because six native builds are worth being able to exercise without
+# spending a version number.
+
+name: natives
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.slice }}
+    runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 90
+    # Spelled out rather than left to the runner's probe: inside a container it picks `sh` when
+    # it does not find bash, and these steps are written in bash. The Windows build overrides it
+    # with the MSYS2 shell, which is the whole point of that job.
+    defaults:
+      run:
+        shell: bash
+    # No fail-fast: when one slice breaks, the other five still say whether they are fine, which
+    # is the difference between one problem and five unknowns.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slice: macos
+            runs-on: macos-latest
+            args: --arch arm64,x86_64
+          - slice: linux-x86_64
+            runs-on: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - slice: linux-aarch64
+            runs-on: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+          - slice: windows-x86_64
+            runs-on: windows-latest
+            msystem: CLANG64
+            pacboy: clang:p nasm:p
+          - slice: windows-aarch64
+            runs-on: windows-11-arm
+            msystem: CLANGARM64
+            # No nasm: it assembles x86 and this slice is ARM. Every package here is fetched
+            # through emulation, so one that builds nothing is minutes of nothing.
+            pacboy: clang:p
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # What the checkout actually produced, before anything tries to run it. A container job
+      # that lands somewhere unexpected fails at the first `./scripts/...` with exit 127 and no
+      # output, which says nothing about why.
+      - name: Where are we
+        run: |
+          echo "pwd: $(pwd)"
+          echo "shell: $(command -v bash || echo 'no bash')"
+          ls -l scripts/build-ffmpeg.sh
+
+      # nasm is what the x86_64 assembly needs. Its absence does not fail the build — the script
+      # falls back to --disable-x86asm and says so — but the fallback is a slower decoder, and a
+      # published one should not be slower by accident.
+      # nasm assembles the x86 optimisations, so it is installed only where an x86_64 slice is
+      # actually produced — macOS builds both architectures, the other two build their own. On
+      # aarch64 it would assemble nothing.
+      - name: Install nasm (macOS)
+        if: matrix.slice == 'macos'
+        run: brew install nasm
+
+      # A JDK, because the payload is half a JNI shim and the shim needs jni.h. The macOS and
+      # Windows runners ship one; a manylinux container ships nothing of the sort, which is what
+      # failed both Linux slices with exit 127 and no message: the script probes the JVM's
+      # architecture through `java` inside a command substitution, and a missing `java` there
+      # dies before the clear "a JDK is needed" check further down can be reached.
+      - name: Install the toolchain (manylinux)
+        if: startsWith(matrix.slice, 'linux')
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            diffutils file which xz java-17-openjdk-devel
+          echo "javac: $(command -v javac)"
+          if [ "${{ matrix.slice }}" = "linux-x86_64" ]; then
+            dnf install -y nasm || echo "nasm unavailable: the build falls back to --disable-x86asm"
+          fi
+
+      - uses: msys2/setup-msys2@v2
+        if: startsWith(matrix.slice, 'windows')
+        with:
+          msystem: ${{ matrix.msystem }}
+          # No `update`, and that is the measured decision rather than the cautious-looking one.
+          # `release: true` (the default) fetches the base from MSYS2's newest upstream release,
+          # so a full `pacman -Syuu` on top of it re-syncs a database that is days old at worst.
+          # It cost 259s on the ARM slice, where every pacman operation runs emulated, and
+          # trimming the package list before it changed nothing: 245s to 259s. The partial-upgrade
+          # failure `update` guards against is a hazard of a STALE installation, which this is
+          # not. If a build here ever breaks on a package mismatch, put it back — that is the
+          # trade, and it is one line.
+          # base-devel carries make, sed and the binutils whose objdump the script's dependency
+          # check calls: 13 packages, 64 MiB, six seconds. Nothing else — this build has no cmake
+          # step and fetches its source as a tarball, so cmake and git were minutes bought for
+          # nobody.
+          #
+          # The compiler is `clang` and NOT `toolchain`, which reads like the safe choice and is
+          # not. `toolchain` is a 26-member group that resolves to 49 packages and 8970 MiB
+          # installed: a whole SECOND LLVM (clang, lld, llvm and compiler-rt at 21, beside the 22
+          # that gets used), lldb and the python, tcl, tk, ncurses, openssl and sqlite3 it drags
+          # behind it, plus clang-analyzer, clang-tools-extra, llvm-openmp and llvm itself.
+          # Installing it cost 122s on x86_64 and 199s on ARM — a third of the first job and half
+          # of the second. `clang` alone depends on clang-libs, compiler-rt, crt, headers, lld and
+          # llvm-tools, so the compiler, the linker and ar/ranlib/strip/nm all still arrive. There
+          # is no pkgconf and there is nothing for it to do: the player profile links no external
+          # library. The environment's own clang is also what puts the right runtime beside the
+          # DLLs instead of MINGW64's.
+          #
+          # The action's own `cache` is on by default and is not the lever here. It stores exactly
+          # one directory, var/cache/pacman/pkg, so it spares the DOWNLOAD and nothing else: the
+          # base is still extracted and every package is still unpacked on every run. It was
+          # hitting cleanly at 1623 MB and the install still took those two minutes. Shortening
+          # the list is the only thing that touches that number, and it shortens the cache too.
+          install: base-devel
+          pacboy: ${{ matrix.pacboy }}
+
+      # `bash scripts/...` and not `./scripts/...`: invoking the file directly asks the kernel to
+      # honour its execute bit and resolve its shebang, and inside a container that is two ways to
+      # fail with exit 127 and not one word of output, which is exactly what happened here. Naming
+      # the interpreter removes both from the question.
+      - name: Build the player payload
+        if: ${{ !startsWith(matrix.slice, 'windows') }}
+        run: bash scripts/build-ffmpeg.sh --profile player ${{ matrix.args }}
+
+      - name: Build the player payload (MSYS2)
+        if: startsWith(matrix.slice, 'windows')
+        shell: msys2 {0}
+        run: bash scripts/build-ffmpeg.sh --profile player
+
+      # What the module packages, exactly as the module expects to find it:
+      # native/dist/player/limn/video/ffmpeg/native/<os>-<arch>/, plus the licence and notice the
+      # LGPL asks to travel with the binary.
+      - name: Show what was produced
+        shell: bash
+        run: ls -lR native/dist/player
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-native-${{ matrix.slice }}
+          path: native/dist/player/
+          if-no-files-found: error
+          retention-days: 1

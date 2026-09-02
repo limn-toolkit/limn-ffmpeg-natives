@@ -1,0 +1,7 @@
+.gradle/
+build/
+.DS_Store
+# NOTHING built lands in git: the unpacked FFmpeg source, the objects, the installed libraries
+# and the staged payload all live here, and a binary in a source repository is a binary nobody
+# can review. The published jars are the only place these libraries are meant to exist.
+native/
