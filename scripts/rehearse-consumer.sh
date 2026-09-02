@@ -85,7 +85,12 @@ while IFS= read -r jar || [ -n "$jar" ]; do
   listing="$(unzip -l "$jar" < /dev/null)"
   case "$name" in
     limn-ffmpeg-natives-*-natives-*.jar)
-      platform="${name#limn-ffmpeg-natives-"$VERSION"-natives-}"; platform="${platform%.jar}"
+      # The platform is whatever follows the LAST "-natives-", read from the end rather than by
+      # stripping the version off the front: a -SNAPSHOT publishes under a timestamped file name
+      # (7.1.5.0-20260902.004556-1), which is not the version string this script was given, and
+      # the first CI run read the whole file name as the platform and declared a manifest that was
+      # right there missing.
+      platform="${name##*-natives-}"; platform="${platform%.jar}"
       if grep -q "limn/video/ffmpeg/native/$platform/libraries.txt" <<< "$listing"; then
         echo "✓ $name carries $platform's manifest"
       else
