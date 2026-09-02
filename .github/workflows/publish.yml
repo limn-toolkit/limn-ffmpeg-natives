@@ -187,21 +187,57 @@ jobs:
             --title "limn-ffmpeg-natives $VERSION" \
             --generate-notes \
             --notes "$(cat <<NOTES
-          Published to Maven Central as \`io.github.limn-toolkit:limn-ffmpeg-natives:$VERSION\`.
+          Published to Maven Central as \`io.github.limn-toolkit:limn-ffmpeg-natives:$VERSION\`
+          — FFmpeg ${VERSION%.*}, versioned with FFmpeg rather than with the toolkit.
 
-          \`limn-video-ffmpeg\` brings the main jar (the JNI shim for every platform) with it;
-          an application adds the FFmpeg libraries for its machine, one classifier per desktop
-          target, or the toolkit's \`limn-video-ffmpeg-natives-all\` POM for all six:
+          **Who reads this artifact.** The toolkit's \`limn-video-ffmpeg\` module, from the
+          limn-toolkit release that adopts it onward (its own POM names the exact version it
+          was tested with, and brings the main jar — the JNI shim for every platform — with
+          it). Check that release's notes before adding anything below: an older
+          \`limn-video-ffmpeg\` carries its own shim and its own classifiers and does not look
+          here.
 
-          \`\`\`kotlin
-          runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:$VERSION:natives-macos-aarch64")
-          \`\`\`
-
+          **What an application adds** is the FFmpeg libraries for the machines it ships to,
+          one \`natives-<os>-<arch>\` classifier per target (~2 MB each):
           \`natives-linux-x86_64\`, \`natives-linux-aarch64\`, \`natives-macos-x86_64\`,
           \`natives-macos-aarch64\`, \`natives-windows-x86_64\`, \`natives-windows-aarch64\`.
 
-          FFmpeg is LGPL-2.1-or-later, built shared, dynamically linked and replaceable; its
-          licence and notice travel in every jar.
+          Gradle, one target (pick yours) — or list several for a bundle that ships to several:
+
+          \`\`\`kotlin
+          dependencies {
+              runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:$VERSION:natives-linux-x86_64")
+          }
+          \`\`\`
+
+          Gradle, all six at once — one line, via the toolkit's aggregator POM (which names
+          this payload's exact version, from the toolkit release that adopts it):
+
+          \`\`\`kotlin
+          dependencies {
+              runtimeOnly("io.github.limn-toolkit:limn-video-ffmpeg-natives-all:<toolkit version>")
+          }
+          \`\`\`
+
+          Maven, one target:
+
+          \`\`\`xml
+          <dependency>
+            <groupId>io.github.limn-toolkit</groupId>
+            <artifactId>limn-ffmpeg-natives</artifactId>
+            <version>$VERSION</version>
+            <classifier>natives-linux-x86_64</classifier>
+            <scope>runtime</scope>
+          </dependency>
+          \`\`\`
+
+          Maven, all six: the same aggregator, \`limn-video-ffmpeg-natives-all\` at the toolkit
+          version, with \`<type>pom</type>\` and \`<scope>runtime</scope>\`.
+
+          Leave the classifier out and the toolkit still runs; the decoder reports itself
+          unavailable, naming the platform it looked for. FFmpeg here is LGPL-2.1-or-later,
+          built shared, dynamically linked and replaceable file for file; its licence and notice
+          travel in every jar. No encoder, no GPL component, no network protocol.
 
           ---
           NOTES
