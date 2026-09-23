@@ -117,6 +117,10 @@ val nativeJars = requiredNativePlatforms.map { platform ->
         description = "The FFmpeg libraries for $platform, published as natives-$platform."
         group = "build"
         archiveClassifier.set("natives-$platform")
+        // A module name of its own: every jar of this artifact used to derive the same one from its
+        // file name, limn.ffmpeg.natives, and two of them in one module-path folder stopped the
+        // JVM at startup ("Two versions of module"), even in an application that plays no video.
+        manifest { attributes("Automatic-Module-Name" to "limn.ffmpeg.natives." + platform.replace('-', '.')) }
         from(ffmpegNatives) {
             include("limn/video/ffmpeg/native/$platform/**")
             exclude("**/$shimName*")
@@ -129,6 +133,15 @@ val nativeJars = requiredNativePlatforms.map { platform ->
 
 tasks.named("assemble") {
     dependsOn(nativeJars)
+}
+
+// The main jar's module name, which limn.video.ffmpeg requires. Resolving it resolves every other
+// automatic module on the path, the classifier jars above included, so an application on the
+// module path gets its platform's libraries with no flag (measured on limn-toolkit's module-path
+// rehearsal, 2026-09-22). The libraries sit under limn/video/ffmpeg/native/, and "native" is a
+// keyword, so no jar here has a package and two of them never collide on one.
+tasks.named<Jar>("jar") {
+    manifest { attributes("Automatic-Module-Name" to "limn.ffmpeg.natives") }
 }
 
 /**
