@@ -50,8 +50,9 @@
 # LICENCE
 #
 #   --enable-gpl is absent and must stay absent. FFmpeg is LGPL-2.1-or-later until a GPL
-#   component is switched on, and every GPL component (libpostproc, three x86 optimisation files,
-#   a list of filters, the build/test tools) is off here. The libraries are built SHARED and the
+#   component is switched on, and every GPL component (three x86 optimisation files, a list of
+#   filters, the build/test tools) is off here. libpostproc was one until FFmpeg 8.0 removed it from
+#   the tree, which is why there is no --disable-postproc below: configure no longer knows the name. The libraries are built SHARED and the
 #   shim links them dynamically, which is what FFmpeg's own compliance guidance asks for and what
 #   keeps the relink obligation off anything downstream. See docs/adr/011.
 #
@@ -70,14 +71,14 @@ export LC_ALL=C
 
 # ---------------------------------------------------------------------------- the pin
 
-FFMPEG_VERSION="7.1.5"
+FFMPEG_VERSION="9.0.2"
 
-# Recorded when this version was first fetched from ffmpeg.org, and checked on every fetch since.
-# What it establishes is that every machine builds the same bytes; what it does NOT establish is
-# that those bytes are upstream's, because ffmpeg.org publishes no checksum beside the tarball.
-# To settle provenance independently, verify the release's GPG signature against the FFmpeg
-# signing key (https://ffmpeg.org/download.html) and update this line from a verified copy.
-FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+# Checked on every fetch, so every machine builds the same bytes. ffmpeg.org publishes no checksum
+# beside the tarball, so provenance comes from the release's GPG signature instead: this one was
+# taken from a copy whose ffmpeg-9.0.2.tar.xz.asc verified on 2026-09-26 against the FFmpeg
+# release signing key, fingerprint FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8
+# (https://ffmpeg.org/download.html). Move the pin the same way: verify, then copy the sum.
+FFMPEG_SHA256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="${REPO_ROOT}/native"
@@ -297,6 +298,18 @@ fi
 # switches the Opus decoder off and says so only in a warning line of its log. Since most WebM
 # audio is Opus, a Matroska demuxer without it would open the file and play it silent. Measured at
 # 0.18 MB for the pair, which is the whole reason it is here rather than a principle.
+#
+# GCC's auto-vectorization is left ON, which is FFmpeg's own default since 8.0 for GCC 13 and newer
+# ("No longer disabling GCC autovectorization", its Changelog); 7.1 passed -fno-tree-vectorize. It
+# is the one thing that makes the Linux slices bigger than the same FFmpeg built with the flag: on
+# linux-aarch64 the player payload is 6.15 MB against 5.21 MB, about 0.5 MB more in the jar, and
+# all of it vectorized C in the HEVC, VP9 and H.264 DSP files. It buys software decode: 1080p H.264
+# was 4.5% faster over ten interleaved rounds, against a same-build noise under 1%, and the flag
+# took the gain away (measured 2026-09-26 in manylinux_2_28_aarch64). Linux has no hardware
+# decode route yet, so software speed is what a Linux user gets. Clang never had the flag: the
+# macOS slices grew 3% and decode no faster, and the Windows ones build with clang too (not
+# measured). Add --extra-cflags=-fno-tree-vectorize here only if the megabyte ever matters more
+# than the decode.
 
 configure_flags() {
     cat <<'FLAGS'
@@ -311,7 +324,6 @@ configure_flags() {
 --disable-avdevice
 --disable-avfilter
 --disable-swscale
---disable-postproc
 --disable-network
 --disable-protocols
 --enable-protocol=file
@@ -574,8 +586,8 @@ stage() {
     # first, the shim last.
     #
     # Two spellings, because the version does not go in the same place on every platform:
-    # libavcodec.61.19.101.dylib and libavcodec.so.61 keep the lib prefix, while mingw produces
-    # avcodec-61.dll. Globbing both is what keeps the manifest a description of what is on disk
+    # libavcodec.63.1.102.dylib and libavcodec.so.63 keep the lib prefix, while mingw produces
+    # avcodec-63.dll. Globbing both is what keeps the manifest a description of what is on disk
     # rather than a guess at what the toolchain was going to call it.
     local stem
     {

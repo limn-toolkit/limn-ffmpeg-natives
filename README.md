@@ -15,7 +15,7 @@ One artifact, `io.github.limn-toolkit:limn-ffmpeg-natives`, seven jars:
 ```kotlin
 dependencies {
     implementation("io.github.limn-toolkit:limn-video-ffmpeg:<toolkit version>")
-    runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:7.1.5.0:natives-macos-aarch64")
+    runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:9.0.2.0:natives-macos-aarch64")
 }
 ```
 
@@ -25,7 +25,7 @@ itself unavailable, naming the platform it looked for.
 
 ## What is inside, and what is not
 
-FFmpeg **7.1.5**, configured with `--disable-everything` and switched back on for exactly what
+FFmpeg **9.0.2**, configured with `--disable-everything` and switched back on for exactly what
 the toolkit opens: H.264, HEVC, VP9 and VP8; AAC, Opus and Vorbis; text subtitles; the MP4 and
 Matroska/WebM demuxers; the `file:` protocol and no network. No encoder, no GPL component,
 no `--enable-nonfree`. Built **shared**, linked dynamically by the shim, and replaceable file for
