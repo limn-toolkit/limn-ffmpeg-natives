@@ -15,13 +15,19 @@ One artifact, `io.github.limn-toolkit:limn-ffmpeg-natives`, seven jars:
 ```kotlin
 dependencies {
     implementation("io.github.limn-toolkit:limn-video-ffmpeg:<toolkit version>")
-    runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:9.0.2.0:natives-macos-aarch64")
+    runtimeOnly("io.github.limn-toolkit:limn-ffmpeg-natives:9.0.2.1:natives-macos-aarch64")
 }
 ```
 
 Targets: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`,
 `windows-aarch64`. Leave the classifier out and the toolkit still runs; the decoder reports
 itself unavailable, naming the platform it looked for.
+
+Oldest systems: **macOS 11.0** on both architectures and **glibc 2.28** on Linux (RHEL 8,
+Debian 10, Ubuntu 20.04). The build script refuses a payload that asks for more, by reading the
+number back out of every library it stages. Use **9.0.2.1 or later**: 9.0.2.0 and every 7.1.5.x
+were built with no macOS deployment target, so each of their macOS libraries asks for macOS 26.0
+and none of them loads on an older Mac.
 
 ## What is inside, and what is not
 

@@ -134,6 +134,33 @@ case "${HOST_OS}" in
        exit 2 ;;
 esac
 
+# The oldest macOS a shipped macOS payload must load on: 11.0, Big Sur, the first with Apple
+# Silicon, and the floor the rest of Limn's macOS natives already hold (LWJGL's arm64 build,
+# limn-lunasvg-natives). The Linux floor below is enforced against the build machine's glibc; this
+# one is chosen by the compiler, so it has to be SAID, on every compile and every link, or clang
+# takes the SDK's own version and writes it into every library as the minimum. That is what
+# happened: 7.1.5.x and 9.0.2.0 were built with no deployment target and every macOS dylib they
+# shipped says minos 26.0, the runner's SDK, so dyld refuses all of them on every macOS before 26
+# and the decoder reports itself unavailable on a machine that plays video perfectly well.
+#
+# Said twice, on purpose. The explicit -mmacosx-version-min on configure's flags and on the shim is
+# the fix, and it shows in configure.log; the exported MACOSX_DEPLOYMENT_TARGET reaches anything
+# that compiles or links without those flags, which is clang's default when no flag is given.
+# verify_macos_payload reads the result back out of the staged libraries and refuses a number
+# above this one, so a toolchain that ignores both still cannot ship.
+#
+# Lowering it cost FFmpeg 9.0.2 nothing (measured 2026-10-19, both architectures): config.h is the
+# same with and without the flag but for the configure line it quotes, the enabled components and
+# accelerators are the same, and the frameworks linked are the same. FFmpeg compiles with
+# -Werror=partial-availability, so an unguarded call to anything newer than the floor fails the
+# build rather than shipping. The one newer API it reaches, CVBufferCopyAttachments (macOS 12), sits
+# behind __builtin_available and becomes a weak import, with CVBufferGetAttachments as the path
+# macOS 11 takes.
+MACOS_FLOOR="11.0"
+if [ "${LIMN_OS}" = "macos" ]; then
+    export MACOSX_DEPLOYMENT_TARGET="${MACOS_FLOOR}"
+fi
+
 # The shim is one C file and needs any C compiler; FFmpeg's own configure finds its own. `cc` is
 # always there on macOS and usually on Linux, and is the one name an MSYS2 environment may not
 # install, so ask for it, then settle.
@@ -451,8 +478,11 @@ build_one_arch() {
         if [ "${arch}" != "$(uname -m)" ]; then
             extra+=(--enable-cross-compile --target-os=darwin --arch="${arch}")
         fi
-        extra+=(--cc="clang -arch ${arch}" --extra-cflags="-arch ${arch}"
-                --extra-ldflags="-arch ${arch}")
+        # -mmacosx-version-min on both: the compile decides which APIs may be called unguarded,
+        # the link writes the minos dyld checks. See MACOS_FLOOR.
+        extra+=(--cc="clang -arch ${arch}"
+                --extra-cflags="-arch ${arch} -mmacosx-version-min=${MACOS_FLOOR}"
+                --extra-ldflags="-arch ${arch} -mmacosx-version-min=${MACOS_FLOOR}")
     elif [ "${LIMN_OS}" = "windows" ]; then
         # No rpath on Windows, and none is wanted: the loader extracts every library into one
         # directory and System.load()s them in dependency order, so by the time the shim is
@@ -539,7 +569,7 @@ build_shim() {
         # of limn-backend-lwjgl, so the handle Java carries is already the one GL wants. The
         # framework is present on every macOS and adds nothing to the payload; it is linked, not
         # bundled.
-        shim_flags=(-arch "${arch}" -dynamiclib
+        shim_flags=(-arch "${arch}" -mmacosx-version-min="${MACOS_FLOOR}" -dynamiclib
             -install_name "@rpath/liblimnffmpeg.dylib" -Wl,-rpath,@loader_path
             -framework CoreVideo "${shim_flags[@]}")
     else
@@ -605,6 +635,9 @@ stage() {
     if [ "${LIMN_OS}" = "linux" ]; then
         verify_linux_payload "${out}"
     fi
+    if [ "${LIMN_OS}" = "macos" ]; then
+        verify_macos_payload "${out}"
+    fi
 }
 
 # The oldest glibc a shipped Linux payload must run on. 2.28 is RHEL 8, Debian 10, Ubuntu 20.04,
@@ -657,6 +690,54 @@ verify_linux_payload() {
         exit 1
     fi
     echo "  payload verified: nothing here needs a glibc newer than ${LINUX_GLIBC_FLOOR}"
+}
+
+# Refuses a macOS payload that asks for a newer macOS than MACOS_FLOOR.
+#
+# The macOS twin of the glibc check, with the same disguise. Every Mach-O library records the
+# oldest macOS it may load on (LC_BUILD_VERSION's minos; LC_VERSION_MIN_MACOSX in an older
+# toolchain's output), dyld refuses it on anything older, and nothing about the build says so: the
+# library loads on the machine that built it and on newer ones, and the tests run there. It
+# happened here. 7.1.5.x and 9.0.2.0 were published with minos 26.0 on every dylib of both
+# architectures, the SDK of the runner that built them, because no deployment target was given;
+# on macOS 15 and older the decoder reported itself unavailable and nothing said the word
+# "version". The fix is the flag at MACOS_FLOOR; this is what keeps it fixed.
+verify_macos_payload() {
+    local out="$1" lib required worst=0
+    if ! command -v otool >/dev/null 2>&1; then
+        echo "  WARNING: otool not found, so the payload's minimum macOS was NOT verified" >&2
+        return 0
+    fi
+    for lib in "${out}"/*.dylib; do
+        [ -f "${lib}" ] || continue
+        # The highest number any slice of the file records: a fat file carries one per
+        # architecture, and the newest is the one some machine will meet. Each command names the
+        # field differently, and LC_BUILD_VERSION also lists the linker's own `version` under its
+        # tools, which is not a macOS version at all.
+        required="$(otool -l "${lib}" 2>/dev/null | awk '
+                        $1 == "cmd" { cmd = $2; next }
+                        cmd == "LC_BUILD_VERSION" && $1 == "minos" { print $2 }
+                        cmd == "LC_VERSION_MIN_MACOSX" && $1 == "version" { print $2 }' \
+                    | sort -V | tail -1)"
+        if [ -z "${required}" ]; then
+            echo "  UNKNOWN: $(basename "${lib}") records no minimum macOS at all" >&2
+            worst=1
+            continue
+        fi
+        if [ "$(printf '%s\n%s\n' "${MACOS_FLOOR}" "${required}" | sort -V | tail -1)" \
+                != "${MACOS_FLOOR}" ]; then
+            echo "  TOO NEW: $(basename "${lib}") needs macOS ${required}, above the" \
+                 "${MACOS_FLOOR} this payload promises" >&2
+            worst=1
+        fi
+    done
+    if [ "${worst}" = "1" ]; then
+        echo "  The library would load on the macOS that built it and on newer ones only." >&2
+        echo "  Something compiled or linked without -mmacosx-version-min=${MACOS_FLOOR}; read" >&2
+        echo "  it with: otool -l <library> | grep -A4 LC_BUILD_VERSION" >&2
+        exit 1
+    fi
+    echo "  payload verified: nothing here needs a macOS newer than ${MACOS_FLOOR}"
 }
 
 # Refuses a Windows payload that imports something it does not carry.
